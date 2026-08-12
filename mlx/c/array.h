@@ -155,6 +155,22 @@ mlx_array mlx_array_new_data_managed_payload(
     void* payload,
     void (*dtor)(void*));
 /**
+ * New array from an existing buffer without permitting an allocation/copy
+ * fallback.
+ *
+ * `status` is set to zero only when the computational backend wrapped `data`
+ * directly. The destructor is invoked exactly once on both success and
+ * failure, so ownership of `payload` transfers to this function.
+ */
+mlx_array mlx_array_new_data_managed_payload_no_copy(
+    void* data,
+    const int* shape,
+    int dim,
+    mlx_dtype dtype,
+    void* payload,
+    void (*dtor)(void*),
+    int* status);
+/**
  * Set array to provided src array.
  */
 int mlx_array_set(mlx_array* arr, const mlx_array src);

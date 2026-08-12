@@ -270,6 +270,58 @@ extern "C" mlx_array mlx_array_new_data_managed_payload(
     return mlx_array_();
   }
 }
+extern "C" mlx_array mlx_array_new_data_managed_payload_no_copy(
+    void* data,
+    const int* shape,
+    int dim,
+    mlx_dtype dtype,
+    void* payload,
+    void (*dtor)(void*),
+    int* status) {
+  if (status == nullptr || dtor == nullptr) {
+    if (dtor != nullptr) {
+      dtor(payload);
+    }
+    mlx_error("no-copy array construction requires status and destructor callbacks");
+    return mlx_array_();
+  }
+  *status = 1;
+
+  try {
+    mlx::core::Shape cpp_shape(shape, shape + dim);
+    mlx::core::Dtype cpp_dtype = mlx_dtype_to_cpp(dtype);
+
+    // Allocate every fallible descriptor before asking the backend to wrap the
+    // external pointer. Once make_buffer succeeds, the only remaining
+    // ownership transition is the Data attachment below.
+    auto cpp_array = std::make_unique<mlx::core::array>(
+        cpp_shape, cpp_dtype, nullptr, std::vector<mlx::core::array>{});
+    auto buffer = mlx::core::allocator::make_buffer(data, cpp_array->nbytes());
+    if (buffer.ptr() == nullptr) {
+      dtor(payload);
+      return mlx_array_();
+    }
+
+    try {
+      auto wrapped_deleter = [dtor, payload](
+                                 mlx::core::allocator::Buffer owned_buffer) {
+        mlx::core::allocator::release(owned_buffer);
+        dtor(payload);
+      };
+      cpp_array->set_data(buffer, std::move(wrapped_deleter));
+    } catch (...) {
+      mlx::core::allocator::release(buffer);
+      dtor(payload);
+      throw;
+    }
+
+    *status = 0;
+    return mlx_array({cpp_array.release()});
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return mlx_array_();
+  }
+}
 extern "C" mlx_array mlx_array_new_data_managed(
     void* data,
     const int* shape,
