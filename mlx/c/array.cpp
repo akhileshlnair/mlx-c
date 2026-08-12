@@ -286,6 +286,13 @@ extern "C" mlx_array mlx_array_new_data_managed_payload_no_copy(
     return mlx_array_();
   }
   *status = 1;
+  bool destructor_invoked_or_transferred = false;
+  auto invoke_destructor_once = [&]() {
+    if (!destructor_invoked_or_transferred) {
+      destructor_invoked_or_transferred = true;
+      dtor(payload);
+    }
+  };
 
   try {
     mlx::core::Shape cpp_shape(shape, shape + dim);
@@ -298,7 +305,7 @@ extern "C" mlx_array mlx_array_new_data_managed_payload_no_copy(
         cpp_shape, cpp_dtype, nullptr, std::vector<mlx::core::array>{});
     auto buffer = mlx::core::allocator::make_buffer(data, cpp_array->nbytes());
     if (buffer.ptr() == nullptr) {
-      dtor(payload);
+      invoke_destructor_once();
       return mlx_array_();
     }
 
@@ -309,15 +316,17 @@ extern "C" mlx_array mlx_array_new_data_managed_payload_no_copy(
         dtor(payload);
       };
       cpp_array->set_data(buffer, std::move(wrapped_deleter));
+      destructor_invoked_or_transferred = true;
     } catch (...) {
       mlx::core::allocator::release(buffer);
-      dtor(payload);
+      invoke_destructor_once();
       throw;
     }
 
     *status = 0;
     return mlx_array({cpp_array.release()});
   } catch (std::exception& e) {
+    invoke_destructor_once();
     mlx_error(e.what());
     return mlx_array_();
   }
