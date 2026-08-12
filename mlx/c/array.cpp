@@ -1,6 +1,9 @@
 /* Copyright © 2023-2024 Apple Inc. */
 
 #include <cstring>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 
 #include "mlx/c/array.h"
 #include "mlx/c/error.h"
@@ -297,25 +300,39 @@ extern "C" mlx_array mlx_array_new_data_managed_payload_no_copy(
   try {
     mlx::core::Shape cpp_shape(shape, shape + dim);
     mlx::core::Dtype cpp_dtype = mlx_dtype_to_cpp(dtype);
+    size_t element_count = 1;
+    for (auto dimension : cpp_shape) {
+      if (dimension < 0 ||
+          (dimension != 0 &&
+           element_count >
+               std::numeric_limits<size_t>::max() /
+                   static_cast<size_t>(dimension))) {
+        throw std::invalid_argument("invalid or overflowing no-copy array shape");
+      }
+      element_count *= static_cast<size_t>(dimension);
+    }
+    if (cpp_dtype.size() != 0 &&
+        element_count >
+            std::numeric_limits<size_t>::max() / cpp_dtype.size()) {
+      throw std::invalid_argument("overflowing no-copy array byte count");
+    }
+    const auto byte_count = element_count * cpp_dtype.size();
+    auto wrapped_deleter =
+        [dtor, payload](mlx::core::allocator::Buffer owned_buffer) {
+          mlx::core::allocator::release(owned_buffer);
+          dtor(payload);
+        };
 
-    // Allocate every fallible descriptor before asking the backend to wrap the
-    // external pointer. Once make_buffer succeeds, the only remaining
-    // ownership transition is the Data attachment below.
-    auto cpp_array = std::make_unique<mlx::core::array>(
-        cpp_shape, cpp_dtype, nullptr, std::vector<mlx::core::array>{});
-    auto buffer = mlx::core::allocator::make_buffer(data, cpp_array->nbytes());
+    auto buffer = mlx::core::allocator::make_buffer(data, byte_count);
     if (buffer.ptr() == nullptr) {
       invoke_destructor_once();
       return mlx_array_();
     }
 
+    std::unique_ptr<mlx::core::array> cpp_array;
     try {
-      auto wrapped_deleter = [dtor, payload](
-                                 mlx::core::allocator::Buffer owned_buffer) {
-        mlx::core::allocator::release(owned_buffer);
-        dtor(payload);
-      };
-      cpp_array->set_data(buffer, std::move(wrapped_deleter));
+      cpp_array = std::make_unique<mlx::core::array>(
+          buffer, std::move(cpp_shape), cpp_dtype, std::move(wrapped_deleter));
       destructor_invoked_or_transferred = true;
     } catch (...) {
       mlx::core::allocator::release(buffer);
